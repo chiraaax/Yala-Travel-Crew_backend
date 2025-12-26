@@ -2,34 +2,34 @@ const express = require("express");
 const router = express.Router();
 const Tour = require("../models/Tour");
 const multer = require("multer");
-const path = require("path");
-const fs = require("fs"); // For file deletion
+const cloudinary = require("cloudinary").v2;
 
-console.log("Tours route loaded"); // Debug log
+console.log("Tours route loaded");
 
-// Configure Multer for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, "uploads/"); // Save to uploads folder
-  },
-  filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname)); // Unique filename: timestamp.ext
-  },
+// ==========================
+// Cloudinary Config
+// ==========================
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
+// ==========================
+// Multer (Memory Storage)
+// ==========================
 const upload = multer({
-  storage: storage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith("image/")) {
-      cb(null, true);
-    } else {
-      cb(new Error("Only images allowed!"), false);
-    }
+    if (file.mimetype.startsWith("image/")) cb(null, true);
+    else cb(new Error("Only images allowed"), false);
   },
 });
 
-// Helper function to validate numbers
+// ==========================
+// Helper
+// ==========================
 const validateNumber = (value, fieldName) => {
   const num = Number(value);
   if (isNaN(num) || num < 0) {
@@ -38,55 +38,60 @@ const validateNumber = (value, fieldName) => {
   return num;
 };
 
-// CREATE (with file upload)
+// ==========================
+// CREATE TOUR
+// ==========================
 router.post("/", upload.single("image"), async (req, res) => {
   try {
-    console.log("POST /tours - Body:", req.body, "File:", req.file ? req.file.filename : "No file"); // Debug
     const { title, description, duration, price, maxParticipants, includes } = req.body;
-    const imagePath = req.file ? `/uploads/${req.file.filename}` : ""; // Get uploaded file path
 
-    if (!imagePath) {
-      return res.status(400).json({ message: "Image is required!" });
+    if (!req.file) {
+      return res.status(400).json({ message: "Image is required" });
     }
 
-    // Validate numbers
-    const validatedPrice = validateNumber(price, "Price");
-    const validatedMaxParticipants = validateNumber(maxParticipants, "Max Participants");
+    // Upload to Cloudinary
+    const uploadResult = await cloudinary.uploader.upload(
+      `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`,
+      { folder: "tours" }
+    );
 
-    const tourData = {
+    const tour = new Tour({
       title,
-      image: imagePath,
+      image: uploadResult.secure_url,
+      imagePublicId: uploadResult.public_id,
       description,
       duration,
-      price: validatedPrice,
-      maxParticipants: validatedMaxParticipants,
-      includes: includes ? includes.split(",").map((i) => i.trim()).filter(Boolean) : [], // Filter empty
-    };
+      price: validateNumber(price, "Price"),
+      maxParticipants: validateNumber(maxParticipants, "Max Participants"),
+      includes: includes
+        ? includes.split(",").map(i => i.trim()).filter(Boolean)
+        : [],
+    });
 
-    const tour = new Tour(tourData);
     await tour.save();
-    console.log("Tour created:", tour._id); // Debug
     res.status(201).json(tour);
+
   } catch (error) {
-    console.error("POST error:", error); // Debug
-    res.status(400).json({ message: error.message }); // 400 for validation
+    console.error("POST error:", error);
+    res.status(400).json({ message: error.message });
   }
 });
 
-// GET ALL
+// ==========================
+// GET ALL TOURS
+// ==========================
 router.get("/", async (req, res) => {
   try {
-    console.log("GET /tours"); // Debug
     const tours = await Tour.find();
-    console.log(`Found ${tours.length} tours`); // Debug
     res.json(tours);
   } catch (error) {
-    console.error("GET error:", error); // Debug
     res.status(500).json({ message: error.message });
   }
 });
 
-// GET SINGLE
+// ==========================
+// GET SINGLE TOUR
+// ==========================
 router.get("/:id", async (req, res) => {
   try {
     const tour = await Tour.findById(req.params.id);
@@ -97,61 +102,79 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-// UPDATE (with optional file upload)
+// ==========================
+// UPDATE TOUR
+// ==========================
 router.put("/:id", upload.single("image"), async (req, res) => {
   try {
-    console.log("PUT /tours/:id - Body:", req.body, "File:", req.file ? req.file.filename : "No file"); // Debug
-    let tour = await Tour.findById(req.params.id);
+    const tour = await Tour.findById(req.params.id);
     if (!tour) return res.status(404).json({ message: "Not found" });
 
+    let imageUrl = tour.image;
+    let imagePublicId = tour.imagePublicId;
+
+    // If new image uploaded
+    if (req.file) {
+      if (imagePublicId) {
+        await cloudinary.uploader.destroy(imagePublicId);
+      }
+
+      const uploadResult = await cloudinary.uploader.upload(
+        `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`,
+        { folder: "tours" }
+      );
+
+      imageUrl = uploadResult.secure_url;
+      imagePublicId = uploadResult.public_id;
+    }
+
     const { title, description, duration, price, maxParticipants, includes } = req.body;
-    const imagePath = req.file ? `/uploads/${req.file.filename}` : tour.image; // Keep old if no new
 
-    // Validate numbers if provided
-    const validatedPrice = price !== undefined ? validateNumber(price, "Price") : tour.price;
-    const validatedMaxParticipants = maxParticipants !== undefined ? validateNumber(maxParticipants, "Max Participants") : tour.maxParticipants;
+    const updatedTour = await Tour.findByIdAndUpdate(
+      req.params.id,
+      {
+        title: title || tour.title,
+        image: imageUrl,
+        imagePublicId,
+        description: description || tour.description,
+        duration: duration || tour.duration,
+        price: price !== undefined ? validateNumber(price, "Price") : tour.price,
+        maxParticipants:
+          maxParticipants !== undefined
+            ? validateNumber(maxParticipants, "Max Participants")
+            : tour.maxParticipants,
+        includes: includes
+          ? includes.split(",").map(i => i.trim()).filter(Boolean)
+          : tour.includes,
+      },
+      { new: true, runValidators: true }
+    );
 
-    const updateData = {
-      title: title || tour.title,
-      image: imagePath,
-      description: description || tour.description,
-      duration: duration || tour.duration,
-      price: validatedPrice,
-      maxParticipants: validatedMaxParticipants,
-      includes: includes ? includes.split(",").map((i) => i.trim()).filter(Boolean) : tour.includes,
-    };
-
-    const updatedTour = await Tour.findByIdAndUpdate(req.params.id, updateData, { new: true, runValidators: true });
-    console.log("Tour updated:", updatedTour._id); // Debug
     res.json(updatedTour);
+
   } catch (error) {
-    console.error("PUT error:", error); // Debug
-    res.status(400).json({ message: error.message }); // 400 for validation
+    console.error("PUT error:", error);
+    res.status(400).json({ message: error.message });
   }
 });
 
-// DELETE (with file deletion)
+// ==========================
+// DELETE TOUR
+// ==========================
 router.delete("/:id", async (req, res) => {
   try {
     const tour = await Tour.findById(req.params.id);
     if (!tour) return res.status(404).json({ message: "Not found" });
 
-    // Delete the image file from uploads folder
-    if (tour.image) {
-      const filePath = path.join(__dirname, '..', tour.image); // Full path: backend/uploads/filename.jpg
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-        console.log("Deleted image file:", filePath); // Debug
-      } else {
-        console.log("Image file not found:", filePath); // Debug
-      }
+    if (tour.imagePublicId) {
+      await cloudinary.uploader.destroy(tour.imagePublicId);
     }
 
-    // Delete the DB entry
     await Tour.findByIdAndDelete(req.params.id);
-    res.json({ message: "Deleted successfully, including image" });
+    res.json({ message: "Deleted successfully" });
+
   } catch (error) {
-    console.error("DELETE error:", error); // Debug
+    console.error("DELETE error:", error);
     res.status(500).json({ message: error.message });
   }
 });

@@ -1,10 +1,42 @@
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
 
-const gallerySchema = new mongoose.Schema({
-  title: { type: String, required: [true, 'Title is required'], minlength: [1, 'Title must have at least 1 character'] },
-  type: { type: String, required: [true, 'Type is required'], minlength: [1, 'Type must have at least 1 character'] },
-  image: { type: String },
-  description: { type: String, required: [true, 'Description is required'], minlength: [1, 'Description must have at least 1 character'] },
-}, { timestamps: true });
+const GallerySchema = new mongoose.Schema(
+  {
+    title: {
+      type: String,
+      required: [true, "Title is required"],
+      trim: true,
+      minlength: [1, "Title must have at least 1 character"],
+    },
 
-module.exports = mongoose.model('Gallery', gallerySchema);
+    type: {
+      type: String,
+      required: [true, "Type is required"],
+      trim: true,
+      minlength: [1, "Type must have at least 1 character"],
+    },
+
+    // Cloudinary image URL
+    image: {
+      type: String,
+      required: true,
+    },
+
+    // Cloudinary public_id (used for delete/update)
+    imagePublicId: {
+      type: String,
+    },
+
+    description: {
+      type: String,
+      required: [true, "Description is required"],
+      trim: true,
+      minlength: [1, "Description must have at least 1 character"],
+    },
+  },
+  {
+    timestamps: true,
+  }
+);
+
+module.exports = mongoose.model("Gallery", GallerySchema);

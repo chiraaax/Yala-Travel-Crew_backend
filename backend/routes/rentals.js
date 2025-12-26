@@ -2,33 +2,25 @@ const express = require("express");
 const router = express.Router();
 const CarRental = require("../models/CarRental");
 const multer = require("multer");
-const path = require("path");
+const cloudinary = require("../config/cloudinary");
 
-console.log("Rentals route loaded"); // Debug log
+console.log("Rentals route loaded");
 
-// Configure Multer for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, "uploads/"); // Save to uploads folder
-  },
-  filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname)); // Unique filename: timestamp.ext
-  },
-});
-
+// -----------------------------
+// Multer (MEMORY STORAGE)
+// -----------------------------
 const upload = multer({
-  storage: storage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith("image/")) {
-      cb(null, true);
-    } else {
-      cb(new Error("Only images allowed!"), false);
-    }
+    if (file.mimetype.startsWith("image/")) cb(null, true);
+    else cb(new Error("Only image files allowed"), false);
   },
 });
 
-// Helper function to validate numbers
+// -----------------------------
+// Helpers
+// -----------------------------
 const validateNumber = (value, fieldName) => {
   const num = Number(value);
   if (isNaN(num) || num < 0) {
@@ -37,55 +29,65 @@ const validateNumber = (value, fieldName) => {
   return num;
 };
 
-// CREATE (with file upload)
+const uploadToCloudinary = async (file, folder) => {
+  const base64 = file.buffer.toString("base64");
+  const dataURI = `data:${file.mimetype};base64,${base64}`;
+
+  const result = await cloudinary.uploader.upload(dataURI, {
+    folder,
+  });
+
+  return result.secure_url;
+};
+
+// -----------------------------
+// CREATE RENTAL
+// -----------------------------
 router.post("/", upload.single("image"), async (req, res) => {
   try {
-    console.log("POST /rentals - Body:", req.body, "File:", req.file ? req.file.filename : "No file"); // Debug
-    const { vehicleName, vehicleType, description, seats, features, available, fuel } = req.body;
-    const imagePath = req.file ? `/uploads/${req.file.filename}` : ""; // Get uploaded file path
+    console.log("POST /rentals", req.body);
 
-    if (!imagePath) {
+    if (!req.file) {
       return res.status(400).json({ message: "Image is required!" });
     }
 
-    // Validate numbers
-    const validatedSeats = validateNumber(seats, "Seats");
+    const imageUrl = await uploadToCloudinary(req.file, "rentals");
 
-    const rentalData = {
-      vehicleName,
-      vehicleType,
-      image: imagePath,
-      description,
-      seats: validatedSeats,
-      features: features ? features.split(",").map((f) => f.trim()).filter(Boolean) : [], // Filter empty
-      available: available === "true" || available === true,
-      fuel,
-    };
+    const rental = await CarRental.create({
+      vehicleName: req.body.vehicleName,
+      vehicleType: req.body.vehicleType,
+      image: imageUrl,
+      description: req.body.description,
+      seats: validateNumber(req.body.seats, "Seats"),
+      features: req.body.features
+        ? req.body.features.split(",").map(f => f.trim()).filter(Boolean)
+        : [],
+      available: req.body.available === "true" || req.body.available === true,
+      fuel: req.body.fuel,
+    });
 
-    const rental = new CarRental(rentalData);
-    await rental.save();
-    console.log("Rental created:", rental._id); // Debug
     res.status(201).json(rental);
   } catch (error) {
-    console.error("POST error:", error); // Debug
-    res.status(400).json({ message: error.message }); // 400 for validation
+    console.error("CREATE rental error:", error);
+    res.status(400).json({ message: error.message });
   }
 });
 
-// GET ALL
+// -----------------------------
+// GET ALL RENTALS
+// -----------------------------
 router.get("/", async (req, res) => {
   try {
-    console.log("GET /rentals"); // Debug
     const rentals = await CarRental.find();
-    console.log(`Found ${rentals.length} rentals`); // Debug
     res.json(rentals);
   } catch (error) {
-    console.error("GET error:", error); // Debug
     res.status(500).json({ message: error.message });
   }
 });
 
-// GET SINGLE
+// -----------------------------
+// GET SINGLE RENTAL
+// -----------------------------
 router.get("/:id", async (req, res) => {
   try {
     const rental = await CarRental.findById(req.params.id);
@@ -96,44 +98,58 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-// UPDATE (with optional file upload)
+// -----------------------------
+// UPDATE RENTAL
+// -----------------------------
 router.put("/:id", upload.single("image"), async (req, res) => {
   try {
-    console.log("PUT /rentals/:id - Body:", req.body, "File:", req.file ? req.file.filename : "No file"); // Debug
-    let rental = await CarRental.findById(req.params.id);
+    const rental = await CarRental.findById(req.params.id);
     if (!rental) return res.status(404).json({ message: "Not found" });
 
-    const { vehicleName, vehicleType, description, seats, features, available, fuel } = req.body;
-    const imagePath = req.file ? `/uploads/${req.file.filename}` : rental.image; // Keep old if no new
+    let imageUrl = rental.image;
 
-    // Validate numbers if provided
-    const validatedSeats = seats !== undefined ? validateNumber(seats, "Seats") : rental.seats;
+    if (req.file) {
+      imageUrl = await uploadToCloudinary(req.file, "rentals");
+    }
 
-    const updateData = {
-      vehicleName: vehicleName || rental.vehicleName,
-      vehicleType: vehicleType || rental.vehicleType,
-      image: imagePath,
-      description: description || rental.description,
-      seats: validatedSeats,
-      features: features ? features.split(",").map((f) => f.trim()).filter(Boolean) : rental.features,
-      available: available !== undefined ? (available === "true" || available === true) : rental.available,
-      fuel: fuel || rental.fuel,
-    };
+    const updatedRental = await CarRental.findByIdAndUpdate(
+      req.params.id,
+      {
+        vehicleName: req.body.vehicleName || rental.vehicleName,
+        vehicleType: req.body.vehicleType || rental.vehicleType,
+        image: imageUrl,
+        description: req.body.description || rental.description,
+        seats:
+          req.body.seats !== undefined
+            ? validateNumber(req.body.seats, "Seats")
+            : rental.seats,
+        features: req.body.features
+          ? req.body.features.split(",").map(f => f.trim()).filter(Boolean)
+          : rental.features,
+        available:
+          req.body.available !== undefined
+            ? req.body.available === "true" || req.body.available === true
+            : rental.available,
+        fuel: req.body.fuel || rental.fuel,
+      },
+      { new: true, runValidators: true }
+    );
 
-    const updatedRental = await CarRental.findByIdAndUpdate(req.params.id, updateData, { new: true, runValidators: true });
-    console.log("Rental updated:", updatedRental._id); // Debug
     res.json(updatedRental);
   } catch (error) {
-    console.error("PUT error:", error); // Debug
-    res.status(400).json({ message: error.message }); // 400 for validation
+    console.error("UPDATE rental error:", error);
+    res.status(400).json({ message: error.message });
   }
 });
 
-// DELETE
+// -----------------------------
+// DELETE RENTAL
+// -----------------------------
 router.delete("/:id", async (req, res) => {
   try {
     const rental = await CarRental.findByIdAndDelete(req.params.id);
     if (!rental) return res.status(404).json({ message: "Not found" });
+
     res.json({ message: "Deleted successfully" });
   } catch (error) {
     res.status(500).json({ message: error.message });

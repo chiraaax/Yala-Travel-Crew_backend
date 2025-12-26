@@ -1,11 +1,10 @@
 const express = require("express");
 const cors = require("cors");
-const multer = require("multer");
 require("dotenv").config();
 
 const connectDB = require("./config/db");
 
-// Connect DB ONCE (important for serverless)
+// Connect DB once (Vercel-safe)
 let isConnected = false;
 const connectOnce = async () => {
   if (!isConnected) {
@@ -30,20 +29,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 /* ======================
-   Multer (Vercel Safe)
-   Uses /tmp instead of disk
-====================== */
-const upload = multer({
-  storage: multer.memoryStorage(), // ✅ REQUIRED for Vercel
-  limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith("image/")) cb(null, true);
-    else cb(new Error("Only image files allowed"), false);
-  },
-});
-
-/* ======================
-   Health / Root
+   Health Check
 ====================== */
 app.get("/", (req, res) => {
   res.json({
@@ -57,22 +43,25 @@ app.get("/api/health", (req, res) => {
 });
 
 /* ======================
-   Routes
+   DB Connection Middleware
 ====================== */
 app.use(async (req, res, next) => {
   await connectOnce();
   next();
 });
 
+/* ======================
+   Routes (NO multer here)
+====================== */
 app.use("/api/admin", require("./routes/admin"));
 app.use("/api/contact", require("./routes/contact"));
 
-app.use("/api/tours", upload.single("image"), require("./routes/tours"));
-app.use("/api/rentals", upload.single("image"), require("./routes/rentals"));
-app.use("/api/packages", upload.single("image"), require("./routes/packages"));
-app.use("/api/gallery", upload.single("image"), require("./routes/gallerys"));
+app.use("/api/tours", require("./routes/tours"));
+app.use("/api/rentals", require("./routes/rentals"));
+app.use("/api/packages", require("./routes/packages"));
+app.use("/api/gallery", require("./routes/gallerys"));
 
 /* ======================
-   EXPORT (NO app.listen)
+   EXPORT (Serverless)
 ====================== */
 module.exports = app;

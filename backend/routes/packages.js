@@ -6,36 +6,44 @@ const cloudinary = require("cloudinary").v2;
 
 console.log("Packages route loaded");
 
-// ==========================
-// Cloudinary Config
-// ==========================
+/* ======================
+   Cloudinary Config
+====================== */
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// ==========================
-// Multer (Memory Storage)
-// ==========================
+/* ======================
+   Multer (Memory)
+====================== */
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (file.mimetype.startsWith("image/")) cb(null, true);
     else cb(new Error("Only images allowed"), false);
   },
 });
 
-// ==========================
-// Helpers
-// ==========================
+/* ======================
+   Helpers
+====================== */
 const splitArray = (value) =>
   value ? value.split(",").map(v => v.trim()).filter(Boolean) : [];
 
-// ==========================
-// GET ALL PACKAGES
-// ==========================
+const validateNumber = (value, field) => {
+  const num = Number(value);
+  if (isNaN(num) || num < 0) {
+    throw new Error(`${field} must be a valid positive number`);
+  }
+  return num;
+};
+
+/* ======================
+   GET ALL
+====================== */
 router.get("/", async (req, res) => {
   try {
     const packages = await Package.find();
@@ -45,9 +53,9 @@ router.get("/", async (req, res) => {
   }
 });
 
-// ==========================
-// GET SINGLE PACKAGE
-// ==========================
+/* ======================
+   GET ONE
+====================== */
 router.get("/:id", async (req, res) => {
   try {
     const pkg = await Package.findById(req.params.id);
@@ -58,22 +66,11 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-// ==========================
-// CREATE PACKAGE
-// ==========================
+/* ======================
+   CREATE
+====================== */
 router.post("/", upload.single("image"), async (req, res) => {
   try {
-    const {
-      name,
-      description,
-      duration,
-      price,
-      destinations,
-      category,
-      includes,
-      highlights,
-    } = req.body;
-
     if (!req.file) {
       return res.status(400).json({ message: "Image is required" });
     }
@@ -83,40 +80,37 @@ router.post("/", upload.single("image"), async (req, res) => {
       { folder: "packages" }
     );
 
-    const pkg = new Package({
-      name,
+    const pkg = await Package.create({
+      name: req.body.name,
       image: uploadResult.secure_url,
       imagePublicId: uploadResult.public_id,
-      description,
-      duration,
-      price: Number(price),
-      destinations: splitArray(destinations),
-      category,
-      includes: splitArray(includes),
-      highlights: splitArray(highlights),
+      description: req.body.description,
+      duration: req.body.duration,
+      price: validateNumber(req.body.price, "Price"),
+      destinations: splitArray(req.body.destinations),
+      category: req.body.category,
+      includes: splitArray(req.body.includes),
+      highlights: splitArray(req.body.highlights),
     });
 
-    const savedPackage = await pkg.save();
-    res.status(201).json(savedPackage);
-
+    res.status(201).json(pkg);
   } catch (error) {
-    console.error("POST error:", error);
+    console.error("CREATE package error:", error);
     res.status(400).json({ message: error.message });
   }
 });
 
-// ==========================
-// UPDATE PACKAGE
-// ==========================
+/* ======================
+   UPDATE
+====================== */
 router.put("/:id", upload.single("image"), async (req, res) => {
   try {
     const pkg = await Package.findById(req.params.id);
     if (!pkg) return res.status(404).json({ message: "Package not found" });
 
-    let imageUrl = pkg.image;
+    let image = pkg.image;
     let imagePublicId = pkg.imagePublicId;
 
-    // New image uploaded
     if (req.file) {
       if (imagePublicId) {
         await cloudinary.uploader.destroy(imagePublicId);
@@ -127,7 +121,7 @@ router.put("/:id", upload.single("image"), async (req, res) => {
         { folder: "packages" }
       );
 
-      imageUrl = uploadResult.secure_url;
+      image = uploadResult.secure_url;
       imagePublicId = uploadResult.public_id;
     }
 
@@ -135,30 +129,38 @@ router.put("/:id", upload.single("image"), async (req, res) => {
       req.params.id,
       {
         name: req.body.name || pkg.name,
-        image: imageUrl,
+        image,
         imagePublicId,
         description: req.body.description || pkg.description,
         duration: req.body.duration || pkg.duration,
-        price: req.body.price !== undefined ? Number(req.body.price) : pkg.price,
-        destinations: req.body.destinations ? splitArray(req.body.destinations) : pkg.destinations,
+        price:
+          req.body.price !== undefined
+            ? validateNumber(req.body.price, "Price")
+            : pkg.price,
+        destinations: req.body.destinations
+          ? splitArray(req.body.destinations)
+          : pkg.destinations,
         category: req.body.category || pkg.category,
-        includes: req.body.includes ? splitArray(req.body.includes) : pkg.includes,
-        highlights: req.body.highlights ? splitArray(req.body.highlights) : pkg.highlights,
+        includes: req.body.includes
+          ? splitArray(req.body.includes)
+          : pkg.includes,
+        highlights: req.body.highlights
+          ? splitArray(req.body.highlights)
+          : pkg.highlights,
       },
       { new: true, runValidators: true }
     );
 
     res.json(updatedPkg);
-
   } catch (error) {
-    console.error("PUT error:", error);
+    console.error("UPDATE package error:", error);
     res.status(400).json({ message: error.message });
   }
 });
 
-// ==========================
-// DELETE PACKAGE
-// ==========================
+/* ======================
+   DELETE
+====================== */
 router.delete("/:id", async (req, res) => {
   try {
     const pkg = await Package.findById(req.params.id);
@@ -168,11 +170,9 @@ router.delete("/:id", async (req, res) => {
       await cloudinary.uploader.destroy(pkg.imagePublicId);
     }
 
-    await Package.findByIdAndDelete(req.params.id);
+    await pkg.deleteOne();
     res.json({ message: "Package deleted successfully" });
-
   } catch (error) {
-    console.error("DELETE error:", error);
     res.status(500).json({ message: error.message });
   }
 });

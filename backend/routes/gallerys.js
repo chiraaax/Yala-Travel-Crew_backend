@@ -1,5 +1,6 @@
 const express = require("express");
 const router = express.Router();
+const mongoose = require("mongoose");
 const Gallery = require("../models/Gallery");
 const multer = require("multer");
 const cloudinary = require("cloudinary").v2;
@@ -23,21 +24,32 @@ const upload = multer({
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
   fileFilter: (req, file, cb) => {
     if (file.mimetype.startsWith("image/")) cb(null, true);
-    else cb(new Error("Only images allowed"), false);
+    else cb(new Error("Only image files are allowed"), false);
   },
 });
+
+// ==========================
+// Helpers
+// ==========================
+const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
+
+const uploadToCloudinary = async (file, folder) => {
+  return cloudinary.uploader.upload(
+    `data:${file.mimetype};base64,${file.buffer.toString("base64")}`,
+    { folder }
+  );
+};
 
 // ==========================
 // GET ALL GALLERY ITEMS
 // ==========================
 router.get("/", async (req, res) => {
   try {
-    console.log("GET /api/gallery");
     const galleryItems = await Gallery.find().sort({ createdAt: -1 });
     res.json(galleryItems);
   } catch (error) {
     console.error("GET gallery error:", error);
-    res.status(500).json({ message: error.message });
+    res.status(500).json({ message: "Failed to fetch gallery items" });
   }
 });
 
@@ -46,13 +58,17 @@ router.get("/", async (req, res) => {
 // ==========================
 router.get("/:id", async (req, res) => {
   try {
-    console.log("GET /api/gallery/:id", req.params.id);
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid gallery ID" });
+    }
+
     const item = await Gallery.findById(req.params.id);
     if (!item) return res.status(404).json({ message: "Gallery item not found" });
+
     res.json(item);
   } catch (error) {
     console.error("GET single gallery error:", error);
-    res.status(500).json({ message: error.message });
+    res.status(500).json({ message: "Failed to fetch gallery item" });
   }
 });
 
@@ -61,35 +77,31 @@ router.get("/:id", async (req, res) => {
 // ==========================
 router.post("/", upload.single("image"), async (req, res) => {
   try {
-    const { title, type, description } = req.body;
+    const title = req.body.title?.trim();
+    const type = req.body.type?.trim();
+    const description = req.body.description?.trim();
 
-    // Validation
-    if (!title?.trim()) return res.status(400).json({ message: "Title is required" });
-    if (!type?.trim()) return res.status(400).json({ message: "Type is required" });
-    if (!description?.trim()) return res.status(400).json({ message: "Description is required" });
+    if (!title) return res.status(400).json({ message: "Title is required" });
+    if (!type) return res.status(400).json({ message: "Type is required" });
+    if (!description) return res.status(400).json({ message: "Description is required" });
     if (!req.file) return res.status(400).json({ message: "Image is required" });
 
-    // Upload to Cloudinary
-    const uploadResult = await cloudinary.uploader.upload(
-      `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`,
-      { folder: "gallery" }
-    );
+    const uploadResult = await uploadToCloudinary(req.file, "gallery");
 
     const galleryItem = new Gallery({
-      title: title.trim(),
-      type: type.trim(),
-      description: description.trim(),
+      title,
+      type,
+      description,
       image: uploadResult.secure_url,
       imagePublicId: uploadResult.public_id,
     });
 
     const savedItem = await galleryItem.save();
-    console.log("Gallery item created:", savedItem._id);
     res.status(201).json(savedItem);
 
   } catch (error) {
     console.error("POST gallery error:", error);
-    res.status(400).json({ message: error.message });
+    res.status(500).json({ message: "Failed to create gallery item" });
   }
 });
 
@@ -98,52 +110,54 @@ router.post("/", upload.single("image"), async (req, res) => {
 // ==========================
 router.put("/:id", upload.single("image"), async (req, res) => {
   try {
-    const { title, type, description } = req.body;
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid gallery ID" });
+    }
 
     const item = await Gallery.findById(req.params.id);
     if (!item) return res.status(404).json({ message: "Gallery item not found" });
 
-    // Validate fields if provided
-    if (title !== undefined && !title.trim()) return res.status(400).json({ message: "Title cannot be empty" });
-    if (type !== undefined && !type.trim()) return res.status(400).json({ message: "Type cannot be empty" });
-    if (description !== undefined && !description.trim()) return res.status(400).json({ message: "Description cannot be empty" });
+    const title = req.body.title?.trim();
+    const type = req.body.type?.trim();
+    const description = req.body.description?.trim();
 
-    let imageUrl = item.image;
+    if (req.body.title !== undefined && !title)
+      return res.status(400).json({ message: "Title cannot be empty" });
+    if (req.body.type !== undefined && !type)
+      return res.status(400).json({ message: "Type cannot be empty" });
+    if (req.body.description !== undefined && !description)
+      return res.status(400).json({ message: "Description cannot be empty" });
+
+    let image = item.image;
     let imagePublicId = item.imagePublicId;
 
-    // If new image uploaded
     if (req.file) {
       if (imagePublicId) {
-        await cloudinary.uploader.destroy(imagePublicId);
+        await cloudinary.uploader.destroy(imagePublicId).catch(() => {});
       }
 
-      const uploadResult = await cloudinary.uploader.upload(
-        `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`,
-        { folder: "gallery" }
-      );
-
-      imageUrl = uploadResult.secure_url;
+      const uploadResult = await uploadToCloudinary(req.file, "gallery");
+      image = uploadResult.secure_url;
       imagePublicId = uploadResult.public_id;
     }
 
     const updatedItem = await Gallery.findByIdAndUpdate(
       req.params.id,
       {
-        title: title !== undefined ? title.trim() : item.title,
-        type: type !== undefined ? type.trim() : item.type,
-        description: description !== undefined ? description.trim() : item.description,
-        image: imageUrl,
+        title: title ?? item.title,
+        type: type ?? item.type,
+        description: description ?? item.description,
+        image,
         imagePublicId,
       },
       { new: true, runValidators: true }
     );
 
-    console.log("Gallery item updated:", updatedItem._id);
     res.json(updatedItem);
 
   } catch (error) {
     console.error("PUT gallery error:", error);
-    res.status(400).json({ message: error.message });
+    res.status(500).json({ message: "Failed to update gallery item" });
   }
 });
 
@@ -152,20 +166,23 @@ router.put("/:id", upload.single("image"), async (req, res) => {
 // ==========================
 router.delete("/:id", async (req, res) => {
   try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid gallery ID" });
+    }
+
     const item = await Gallery.findById(req.params.id);
     if (!item) return res.status(404).json({ message: "Gallery item not found" });
 
     if (item.imagePublicId) {
-      await cloudinary.uploader.destroy(item.imagePublicId);
+      await cloudinary.uploader.destroy(item.imagePublicId).catch(() => {});
     }
 
     await Gallery.findByIdAndDelete(req.params.id);
-    console.log("Gallery item deleted:", item._id);
     res.json({ message: "Gallery item deleted successfully" });
 
   } catch (error) {
     console.error("DELETE gallery error:", error);
-    res.status(500).json({ message: error.message });
+    res.status(500).json({ message: "Failed to delete gallery item" });
   }
 });
 

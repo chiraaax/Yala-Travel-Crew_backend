@@ -6,21 +6,21 @@ const cloudinary = require("../config/cloudinary");
 
 console.log("Rentals route loaded");
 
-// -----------------------------
-// Multer (MEMORY STORAGE)
-// -----------------------------
+/* ======================
+   Multer (Memory)
+====================== */
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (file.mimetype.startsWith("image/")) cb(null, true);
     else cb(new Error("Only image files allowed"), false);
   },
 });
 
-// -----------------------------
-// Helpers
-// -----------------------------
+/* ======================
+   Helpers
+====================== */
 const validateNumber = (value, fieldName) => {
   const num = Number(value);
   if (isNaN(num) || num < 0) {
@@ -33,30 +33,25 @@ const uploadToCloudinary = async (file, folder) => {
   const base64 = file.buffer.toString("base64");
   const dataURI = `data:${file.mimetype};base64,${base64}`;
 
-  const result = await cloudinary.uploader.upload(dataURI, {
-    folder,
-  });
-
-  return result.secure_url;
+  return await cloudinary.uploader.upload(dataURI, { folder });
 };
 
-// -----------------------------
-// CREATE RENTAL
-// -----------------------------
+/* ======================
+   CREATE RENTAL
+====================== */
 router.post("/", upload.single("image"), async (req, res) => {
   try {
-    console.log("POST /rentals", req.body);
-
     if (!req.file) {
-      return res.status(400).json({ message: "Image is required!" });
+      return res.status(400).json({ message: "Image is required" });
     }
 
-    const imageUrl = await uploadToCloudinary(req.file, "rentals");
+    const result = await uploadToCloudinary(req.file, "rentals");
 
     const rental = await CarRental.create({
       vehicleName: req.body.vehicleName,
       vehicleType: req.body.vehicleType,
-      image: imageUrl,
+      image: result.secure_url,
+      imagePublicId: result.public_id,
       description: req.body.description,
       seats: validateNumber(req.body.seats, "Seats"),
       features: req.body.features
@@ -73,9 +68,9 @@ router.post("/", upload.single("image"), async (req, res) => {
   }
 });
 
-// -----------------------------
-// GET ALL RENTALS
-// -----------------------------
+/* ======================
+   GET ALL
+====================== */
 router.get("/", async (req, res) => {
   try {
     const rentals = await CarRental.find();
@@ -85,31 +80,25 @@ router.get("/", async (req, res) => {
   }
 });
 
-// -----------------------------
-// GET SINGLE RENTAL
-// -----------------------------
-router.get("/:id", async (req, res) => {
-  try {
-    const rental = await CarRental.findById(req.params.id);
-    if (!rental) return res.status(404).json({ message: "Not found" });
-    res.json(rental);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-});
-
-// -----------------------------
-// UPDATE RENTAL
-// -----------------------------
+/* ======================
+   UPDATE RENTAL
+====================== */
 router.put("/:id", upload.single("image"), async (req, res) => {
   try {
     const rental = await CarRental.findById(req.params.id);
     if (!rental) return res.status(404).json({ message: "Not found" });
 
-    let imageUrl = rental.image;
+    let image = rental.image;
+    let imagePublicId = rental.imagePublicId;
 
     if (req.file) {
-      imageUrl = await uploadToCloudinary(req.file, "rentals");
+      if (imagePublicId) {
+        await cloudinary.uploader.destroy(imagePublicId);
+      }
+
+      const result = await uploadToCloudinary(req.file, "rentals");
+      image = result.secure_url;
+      imagePublicId = result.public_id;
     }
 
     const updatedRental = await CarRental.findByIdAndUpdate(
@@ -117,7 +106,8 @@ router.put("/:id", upload.single("image"), async (req, res) => {
       {
         vehicleName: req.body.vehicleName || rental.vehicleName,
         vehicleType: req.body.vehicleType || rental.vehicleType,
-        image: imageUrl,
+        image,
+        imagePublicId,
         description: req.body.description || rental.description,
         seats:
           req.body.seats !== undefined
@@ -142,14 +132,19 @@ router.put("/:id", upload.single("image"), async (req, res) => {
   }
 });
 
-// -----------------------------
-// DELETE RENTAL
-// -----------------------------
+/* ======================
+   DELETE RENTAL
+====================== */
 router.delete("/:id", async (req, res) => {
   try {
-    const rental = await CarRental.findByIdAndDelete(req.params.id);
+    const rental = await CarRental.findById(req.params.id);
     if (!rental) return res.status(404).json({ message: "Not found" });
 
+    if (rental.imagePublicId) {
+      await cloudinary.uploader.destroy(rental.imagePublicId);
+    }
+
+    await rental.deleteOne();
     res.json({ message: "Deleted successfully" });
   } catch (error) {
     res.status(500).json({ message: error.message });
